@@ -1,4 +1,5 @@
 import logging
+import re
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -8,63 +9,70 @@ from telegram.ext import Application, CommandHandler, MessageHandler, ContextTyp
 
 from .config import BOT_TOKEN, LOCAL_BOT_API_URL, MAX_FILE_MB, DOWNLOAD_DIR, ALLOWED_HOSTS
 from .downloader import validate_url, download_direct_video
+from .providers import provider_for, resolve_share
 
 logging.basicConfig(format="%(asctime)s | %(levelname)s | %(name)s | %(message)s", level=logging.INFO)
 log = logging.getLogger("dlonder-bot")
 MAX_BYTES = MAX_FILE_MB * 1024 * 1024
-
-def platform_name(url: str) -> str:
-    host = (urlparse(url).hostname or "").lower()
-    if "diskwala" in host:
-        return "DiskWala"
-    if "terabox" in host or "1024tera" in host:
-        return "TeraBox"
-    return "Direct video URL"
+URL_RE = re.compile(r"https?://[^\s<>\"']+", re.I)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "👋 Welcome to Dlonder!\n\n"
-        "Send an authorized direct HTTPS video-file URL or upload a video here.\n"
-        "DiskWala/TeraBox share-page extraction is not enabled in this starter. "
-        "Use the platform's official download/export option and send a direct file URL.\n\n"
-        "/help for instructions."
+        "Send a DiskWala or TeraBox share link, an authorized direct HTTPS video URL, or upload a video.\n"
+        "DiskWala uses a third-party resolver. TeraBox requires your own authorized session cookie.\n\n/help for details."
     )
 
 async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        f"Send a direct HTTPS MP4/MOV/WebM/MKV/AVI URL or upload a video file.\n"
-        f"Configured limit: {MAX_FILE_MB} MB.\n"
-        "Share-page extraction, ad removal, login/OTP/CAPTCHA bypass and DRM circumvention are not supported."
+        f"Send a DiskWala/TeraBox share link or direct HTTPS video URL.\n"
+        f"Current upload limit: {MAX_FILE_MB} MB.\n"
+        "TeraBox requires TERABOX_COOKIE in Koyeb Secrets. Never share cookies or bot tokens in chat.\n"
+        "Only download files you own or are authorized to access."
     )
 
 async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (update.message.text or "").strip()
-    urls = [part for part in text.split() if part.startswith("https://")]
-    if not urls:
+    match = URL_RE.search(text)
+    if not match:
         return
-    url = urls[0]
-    platform = platform_name(url)
-    if platform in ("DiskWala", "TeraBox"):
-        await update.message.reply_text(
-            f"{platform} link detected. This version does not extract media from share pages. "
-            "Please use the official download/export option and provide an authorized direct HTTPS video URL."
-        )
-        return
+    url = match.group(0).rstrip(".,)]}")
     status = None
     path = None
     try:
-        safe_url = validate_url(url, ALLOWED_HOSTS)
-        status = await update.message.reply_text("⏳ Downloading direct video…")
-        path = await download_direct_video(safe_url, DOWNLOAD_DIR, MAX_BYTES)
+        headers = None
+        name = "video"
+        provider = provider_for(url)
+        if provider:
+            status = await update.message.reply_text(f"🔎 Resolving {provider.title()} share link…")
+            result = await resolve_share(url)
+            name = result["name"]
+            if result.get("size") and result["size"] > MAX_BYTES:
+                raise ValueError(f"Video is larger than this bot's configured {MAX_FILE_MB} MB limit.")
+            safe_url = validate_url(result["url"], ALLOWED_HOSTS)
+            headers = result.get("headers")
+            await status.edit_text(f"⏬ Downloading {name}…")
+        else:
+            safe_url = validate_url(url, ALLOWED_HOSTS)
+            status = await update.message.reply_text("⏬ Downloading direct video…")
+        path = await download_direct_video(safe_url, DOWNLOAD_DIR, MAX_BYTES, headers=headers)
         await status.edit_text("⬆️ Download complete. Sending to Telegram…")
         await update.message.chat.send_action(ChatAction.UPLOAD_VIDEO)
         with path.open("rb") as f:
-            await update.message.reply_video(video=f, caption=f"✅ {path.name}", supports_streaming=True,
-                read_timeout=900, write_timeout=900, connect_timeout=60, pool_timeout=60)
+            await update.message.reply_video(
+                video=f, caption=f"✅ {name if provider else path.name}", supports_streaming=True,
+                read_timeout=900, write_timeout=900, connect_timeout=60, pool_timeout=60
+            )
         await status.delete()
     except Exception as exc:
         log.exception("URL processing failed")
-        await update.message.reply_text(f"❌ Could not process URL: {exc}")
+        if status:
+            try:
+                await status.edit_text(f"❌ Could not process link: {exc}")
+            except Exception:
+                await update.message.reply_text(f"❌ Could not process link: {exc}")
+        else:
+            await update.message.reply_text(f"❌ Could not process link: {exc}")
     finally:
         if path:
             path.unlink(missing_ok=True)
