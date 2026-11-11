@@ -69,7 +69,11 @@ async def resolve_terabox(url):
     if not files: raise ValueError("No directly downloadable video was found in this share.")
     f=files[0]
     direct=validate_url(str(f["dlink"]),set())
-    dl_headers={"User-Agent":UA,"Accept":"*/*","Referer":"https://www.terabox.com/"}\n    dl_host=(urlparse(direct).hostname or "").lower()\n    if dl_host == "terabox.com" or dl_host.endswith(".terabox.com"):\n        dl_headers["Cookie"]=TERABOX_COOKIE\n    return {"url":direct,"name":str(f.get("server_filename") or "terabox_video.mp4"),"size":int(f.get("size") or 0),"headers":dl_headers}
+    dl_headers={"User-Agent":UA,"Accept":"*/*","Referer":"https://www.terabox.com/"}
+    dl_host=(urlparse(direct).hostname or "").lower()
+    if dl_host == "terabox.com" or dl_host.endswith(".terabox.com"):
+        dl_headers["Cookie"]=TERABOX_COOKIE
+    return {"url":direct,"name":str(f.get("server_filename") or "terabox_video.mp4"),"size":int(f.get("size") or 0),"headers":dl_headers}
 
 async def resolve_share(url):
     p=provider_for(url)
