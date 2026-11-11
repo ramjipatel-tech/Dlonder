@@ -40,7 +40,8 @@ async def download_direct_video(url: str, dest_dir: Path, max_bytes: int, header
             final = urlparse(str(resp.url))
             if final.scheme != "https" or not final.hostname or not _is_public_host(final.hostname):
                 raise ValueError("Redirect target is not allowed.")
-            validate_url(str(resp.url), set())\n            content_type = resp.headers.get("Content-Type", "").split(";")[0].lower()
+            validate_url(str(resp.url), set())
+            content_type = resp.headers.get("Content-Type", "").split(";")[0].lower()
             length = int(resp.headers.get("Content-Length", "0") or 0)
             if length and length > max_bytes:
                 raise ValueError(f"File is larger than the configured limit ({max_bytes // (1024*1024)} MB).")
