@@ -31,16 +31,16 @@ def validate_url(url: str, allowed_hosts: set[str]) -> str:
         raise ValueError("This domain is not in ALLOWED_HOSTS.")
     return url.strip()
 
-async def download_direct_video(url: str, dest_dir: Path, max_bytes: int) -> Path:
+async def download_direct_video(url: str, dest_dir: Path, max_bytes: int, headers: dict | None = None) -> Path:
     dest_dir.mkdir(parents=True, exist_ok=True)
     timeout = aiohttp.ClientTimeout(total=900, connect=25, sock_read=90)
-    async with aiohttp.ClientSession(timeout=timeout, headers={"User-Agent": "PersonalVideoBot/1.0"}) as session:
+    async with aiohttp.ClientSession(timeout=timeout, headers=headers or {"User-Agent": "PersonalVideoBot/1.0"}) as session:
         async with session.get(url, allow_redirects=True) as resp:
             resp.raise_for_status()
             final = urlparse(str(resp.url))
             if final.scheme != "https" or not final.hostname or not _is_public_host(final.hostname):
                 raise ValueError("Redirect target is not allowed.")
-            content_type = resp.headers.get("Content-Type", "").split(";")[0].lower()
+            validate_url(str(resp.url), set())\n            content_type = resp.headers.get("Content-Type", "").split(";")[0].lower()
             length = int(resp.headers.get("Content-Length", "0") or 0)
             if length and length > max_bytes:
                 raise ValueError(f"File is larger than the configured limit ({max_bytes // (1024*1024)} MB).")
