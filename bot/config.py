@@ -8,3 +8,6 @@ LOCAL_BOT_API_URL = os.getenv("LOCAL_BOT_API_URL", "").strip()
 MAX_FILE_MB = int(os.getenv("MAX_FILE_MB", "1000"))
 DOWNLOAD_DIR = Path(os.getenv("DOWNLOAD_DIR", "/tmp/downloads"))
 ALLOWED_HOSTS = {h.strip().lower() for h in os.getenv("ALLOWED_HOSTS", "").split(",") if h.strip()}
+
+DISKWALA_RESOLVER_URL = os.getenv('DISKWALA_RESOLVER_URL', 'https://diskwala-dl-six.vercel.app/api/scrap').strip()
+TERABOX_COOKIE = os.getenv('TERABOX_COOKIE', '').strip()
