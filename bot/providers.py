@@ -1,5 +1,5 @@
 import re
-from urllib.parse import urlparse, parse_qsl, unquote
+from urllib.parse import urlparse, parse_qsl, unquote, urljoin
 import aiohttp
 from .config import DISKWALA_RESOLVER_URL, TERABOX_COOKIE
 from .downloader import validate_url
@@ -7,6 +7,7 @@ from .downloader import validate_url
 VIDEO_EXTS = (".mp4", ".m4v", ".mov", ".webm", ".mkv", ".avi", ".ts")
 UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/125.0 Safari/537.36"
 DISKWALA_DOMAINS = ("diskwala.com", "diskwala.app", "diskwala.in", "diskwala.org", "diskwala.net")
+DEFAULT_DISKWALA_API = "https://mini.thediskwala.com/api/fetch-video"
 TERABOX_HINTS = (
     "terabox", "1024tera", "nephobox", "freeterabox", "mirrobox",
     "dubox", "4funbox", "momerybox", "tibibox", "terashare",
@@ -22,15 +23,18 @@ def provider_for(url: str) -> str | None:
     return None
 
 
-async def resolve_diskwala(url: str) -> dict:
-    if not DISKWALA_RESOLVER_URL:
-        raise ValueError("DISKWALA_RESOLVER_URL is not configured.")
-    p = urlparse(DISKWALA_RESOLVER_URL)
+async def _call_diskwala_resolver(resolver_url: str, share_url: str) -> dict:
+    p = urlparse(resolver_url)
     if p.scheme != "https" or not p.hostname:
         raise ValueError("DiskWala resolver must be an HTTPS URL.")
+    origin = f"{p.scheme}://{p.netloc}"
+    is_fetch_video = "fetch-video" in p.path
+    params = {"url": share_url, "attempt": "0"} if is_fetch_video else {"q": share_url}
+    req_headers = {"User-Agent": UA, "Accept": "*/*", "Referer": f"{origin}/"}
+
     timeout = aiohttp.ClientTimeout(total=45, connect=15)
-    async with aiohttp.ClientSession(timeout=timeout, headers={"User-Agent": UA}) as s:
-        async with s.get(DISKWALA_RESOLVER_URL, params={"q": url}) as r:
+    async with aiohttp.ClientSession(timeout=timeout, headers=req_headers) as s:
+        async with s.get(resolver_url, params=params) as r:
             try:
                 data = await r.json(content_type=None)
             except Exception:
@@ -41,10 +45,7 @@ async def resolve_diskwala(url: str) -> dict:
                     det = data.get("details")
                     det_msg = det.get("error") if isinstance(det, dict) else det
                     extra = f" [{det_msg}]" if det_msg else ""
-                    raise ValueError(
-                        f"DiskWala resolver error ({r.status}): {err}{extra}. "
-                        "Third-party resolver service abhi fail ho raha hai; valid DISKWALA_RESOLVER_URL set karein."
-                    )
+                    raise ValueError(f"DiskWala resolver error ({r.status}): {err}{extra}")
                 body = (await r.text())[:200]
                 raise ValueError(f"DiskWala resolver HTTP {r.status}: {body}")
 
@@ -58,10 +59,14 @@ async def resolve_diskwala(url: str) -> dict:
         or f.get("url")
         or payload.get("downloadUrl")
         or payload.get("url")
-        or (data.get("downloadUrl") if isinstance(data, dict) else None)
         or (data.get("url") if isinstance(data, dict) else None)
+        or (data.get("downloadUrl") if isinstance(data, dict) else None)
     )
-    if not direct or (isinstance(data, dict) and data.get("success") is False):
+    failed_flag = isinstance(data, dict) and (
+        data.get("success") is False
+        or (data.get("status") is not None and str(data.get("status")).lower() not in ("success", "ok", "true"))
+    )
+    if not direct or failed_flag:
         err_msg = (data.get("error") or data.get("message") or "") if isinstance(data, dict) else ""
         detail = f" ({err_msg})" if err_msg else ""
         raise ValueError(
@@ -69,17 +74,41 @@ async def resolve_diskwala(url: str) -> dict:
             "It may be private, deleted, unsupported, or the resolver may be unavailable."
         )
 
-    direct = validate_url(str(direct), set())
-    name = str(f.get("name") or payload.get("name") or "diskwala_video").strip()
+    direct_abs = urljoin(f"{origin}/", str(direct))
+    direct_abs = validate_url(direct_abs, set())
+    name = str(
+        f.get("name")
+        or payload.get("name")
+        or (data.get("title") if isinstance(data, dict) else None)
+        or "diskwala_video"
+    ).strip()
     ext = re.sub(r"[^a-z0-9]", "", str(f.get("extension") or "mp4").lower()) or "mp4"
-    if not name.lower().endswith("." + ext):
+    if not any(name.lower().endswith(e) for e in VIDEO_EXTS):
         name += "." + ext
     return {
-        "url": direct,
+        "url": direct_abs,
         "name": name,
         "size": int(f.get("size") or payload.get("size") or 0),
-        "headers": {"User-Agent": UA, "Accept": "*/*"},
+        "headers": {"User-Agent": UA, "Accept": "*/*", "Referer": f"{origin}/"},
     }
+
+
+async def resolve_diskwala(url: str) -> dict:
+    resolvers = []
+    if DISKWALA_RESOLVER_URL:
+        resolvers.append(DISKWALA_RESOLVER_URL)
+    if DEFAULT_DISKWALA_API not in resolvers:
+        resolvers.append(DEFAULT_DISKWALA_API)
+
+    last_err: Exception | None = None
+    for idx, resolver_url in enumerate(resolvers):
+        try:
+            return await _call_diskwala_resolver(resolver_url, url)
+        except Exception as exc:
+            last_err = exc
+            if idx + 1 < len(resolvers):
+                continue
+    raise last_err or ValueError("DiskWala resolver is not configured.")
 
 
 def _surl(final_url: str) -> str | None:
