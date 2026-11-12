@@ -31,10 +31,22 @@ async def resolve_diskwala(url: str) -> dict:
     timeout = aiohttp.ClientTimeout(total=45, connect=15)
     async with aiohttp.ClientSession(timeout=timeout, headers={"User-Agent": UA}) as s:
         async with s.get(DISKWALA_RESOLVER_URL, params={"q": url}) as r:
+            try:
+                data = await r.json(content_type=None)
+            except Exception:
+                data = None
             if r.status >= 400:
+                if isinstance(data, dict):
+                    err = data.get("error") or data.get("message") or f"HTTP {r.status}"
+                    det = data.get("details")
+                    det_msg = det.get("error") if isinstance(det, dict) else det
+                    extra = f" [{det_msg}]" if det_msg else ""
+                    raise ValueError(
+                        f"DiskWala resolver error ({r.status}): {err}{extra}. "
+                        "Third-party resolver service abhi fail ho raha hai; valid DISKWALA_RESOLVER_URL set karein."
+                    )
                 body = (await r.text())[:200]
                 raise ValueError(f"DiskWala resolver HTTP {r.status}: {body}")
-            data = await r.json(content_type=None)
 
     payload = (data or {}).get("data") if isinstance(data, dict) else {}
     if not isinstance(payload, dict):
