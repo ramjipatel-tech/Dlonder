@@ -27,9 +27,19 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         f"Send a DiskWala/TeraBox share link or direct HTTPS video URL.\n"
         f"Current upload limit: {MAX_FILE_MB} MB.\n"
-        "TeraBox requires TERABOX_COOKIE in Koyeb Secrets. Never share cookies or bot tokens in chat.\n"
+        "TeraBox requires TERABOX_COOKIE in environment secrets / Config Vars. Never share cookies or bot tokens in chat.\n"
         "Only download files you own or are authorized to access."
     )
+
+
+async def _safe_edit(status_msg, text: str):
+    if not status_msg:
+        return
+    try:
+        await status_msg.edit_text(text)
+    except Exception:
+        pass
+
 
 async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (update.message.text or "").strip()
@@ -51,19 +61,34 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 raise ValueError(f"Video is larger than this bot's configured {MAX_FILE_MB} MB limit.")
             safe_url = validate_url(result["url"], ALLOWED_HOSTS)
             headers = result.get("headers")
-            await status.edit_text(f"⏬ Downloading {name}…")
+            await _safe_edit(status, f"⏬ Downloading {name}…")
         else:
             safe_url = validate_url(url, ALLOWED_HOSTS)
             status = await update.message.reply_text("⏬ Downloading direct video…")
-        path = await download_direct_video(safe_url, DOWNLOAD_DIR, MAX_BYTES, headers=headers)
-        await status.edit_text("⬆️ Download complete. Sending to Telegram…")
+        path = await download_direct_video(
+            safe_url,
+            DOWNLOAD_DIR,
+            MAX_BYTES,
+            headers=headers,
+            suggested_name=name if provider else None,
+        )
+        await _safe_edit(status, "⬆️ Download complete. Sending to Telegram…")
         await update.message.chat.send_action(ChatAction.UPLOAD_VIDEO)
         with path.open("rb") as f:
             await update.message.reply_video(
-                video=f, caption=f"✅ {name if provider else path.name}", supports_streaming=True,
-                read_timeout=900, write_timeout=900, connect_timeout=60, pool_timeout=60
+                video=f,
+                filename=name if provider else path.name,
+                caption=f"✅ {name if provider else path.name}",
+                supports_streaming=True,
+                read_timeout=900,
+                write_timeout=900,
+                connect_timeout=60,
+                pool_timeout=60,
             )
-        await status.delete()
+        try:
+            await status.delete()
+        except Exception:
+            pass
     except Exception as exc:
         log.exception("URL processing failed")
         if status:
